@@ -1,0 +1,43 @@
+{"state": "ขอใบเสร็จค่ารักษาเมื่อวานใหม่ได้ไหมคะ ฉบับเดิมทำหาย", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "โอนเงินค่ารักษาไปแล้วแต่โดนตัดบัตรอีกรอบ ยอดซ้ำ ช่วยคืนเงินด้วยครับ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "จะเคลมประกันต้องใช้เอกสารอะไรบ้าง", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "ยอดในใบแจ้งหนี้ไม่ตรงกับที่จ่ายจริง", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "จ่ายค่ารักษาผ่านพร้อมเพย์ได้หรือเปล่า", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "บริษัทประกันบอกว่าวงเงินไม่พอ ต้องจ่ายส่วนต่างเท่าไหร่", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "ขอสำเนาใบเสร็จไปเบิกกับบริษัทค่ะ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "ใบแจ้งค่าใช้จ่ายแยกรายการขอได้ที่ไหน", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "ชำระด้วยบัตรเครดิตได้ไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "เงินที่จ่ายเกินไปจะได้คืนเมื่อไหร่", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "ขอเลื่อนนัดหมอวันพรุ่งนี้เป็นสัปดาห์หน้าได้ไหมครับ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "อยากจองคิวหมอกระดูกครั้งแรก ต้องทำยังไง", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "ยกเลิกนัดวันศุกร์นี้ค่ะ ติดธุระ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "มาสายจากเวลานัดเกือบชั่วโมง ยังได้ตรวจไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "ยังไม่ได้รับ SMS ยืนยันวันนัดเลย", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "ตู้กดบัตรคิวอยู่ตรงไหน ต้องมาก่อนกี่นาที", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "ขอเปลี่ยนเวลานัดเป็นช่วงบ่ายได้หรือเปล่า", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "หมอคนเดิมว่างวันไหนบ้างครับ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "นัดพบแพทย์เฉพาะทางผ่านไลน์ได้ไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "ลืมวันนัด ช่วยเช็กให้หน่อยค่ะ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "ผลเลือดเมื่อวันจันทร์ออกหรือยังคะ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "ขอใบรับรองแพทย์ย้อนหลังเดือนที่แล้ว ใช้ยื่นที่ทำงาน", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "จะย้ายไปรักษาที่โรงพยาบาลอื่น ขอประวัติการรักษาด้วย", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "ผลปัสสาวะดูในแอปได้หรือยัง", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "ลูกชายจะมาขอเอกสารแทนแม่ ต้องมีหนังสือยินยอมไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "ขอผลแล็บฉบับพิมพ์ต้องเอาอะไรมาบ้าง", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "สำเนาประวัติการรักษาใช้เวลากี่วัน", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "ขอรายการยาที่ใช้อยู่ไปให้หมอที่คลินิก", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "แบบฟอร์มขอเอกสารทางการแพทย์อยู่ที่ไหน", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "ส่งผลตรวจไปโรงพยาบาลปลายทางทางระบบได้ไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "ขอ receipt ค่า OPD เมื่อวานหน่อยครับ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "billing"}
+{"state": "reschedule นัดวันพุธเป็นวันศุกร์ได้ไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "appointment"}
+{"state": "lab result ของเมื่อวานออกยังคะ", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": "records"}
+{"state": "สูตรต้มยำกุ้งน้ำข้นใส่นมสดหรือนมข้นจืดดีกว่ากัน", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "พรุ่งนี้ฝนจะตกที่เชียงใหม่ไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "ทีมฟุตบอลไทยแข่งรอบคัดเลือกวันไหน", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "รถยนต์สตาร์ทไม่ติด แบตเตอรี่น่าจะหมด", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "แนะนำหนังสือนิยายแปลสนุกๆ หน่อย", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "ราคาทองคำวันนี้ขึ้นหรือลง", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "วิธีปลูกกล้วยไม้ให้ออกดอกเร็ว", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "ตั๋วเครื่องบินไปภูเก็ตช่วงสงกรานต์แพงไหม", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "แมวไม่ยอมกินอาหารเม็ดยี่ห้อใหม่", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}
+{"state": "อยากเรียนเขียนโปรแกรม Rust เริ่มจากตรงไหนดี", "prompt": "ส่งเรื่องนี้ไปแผนกไหน", "options": ["appointment", "billing", "records"], "gold": null}

@@ -1,0 +1,29 @@
+[package]
+name = "reflex-study"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Study re-implementation of the Reflex modelless decision engine (reflex.gist.rs), a Thai-aware tokenizer, and a three-rung decision ladder"
+repository = "https://github.com/MegaWiz-Dev-Team/reflex-study"
+readme = "README.md"
+publish = false
+
+[dependencies]
+# The lexical rung's recipes and the Ultra Instinct gate.
+ultra-instinct = { git = "https://github.com/MegaWiz-Dev-Team/ultra-instinct", tag = "v0.1.0" }
+# Same version the upstream engine compresses with, so drafter deltas match byte for byte.
+lz4_flex = { version = "=0.13.1", default-features = false, features = ["std", "safe-encode"] }
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: a saved ladder loads back to the exact weights it was trained to.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+blake3 = "1"
+# Plain-HTTP client for the local Heimdall gateway only (no TLS stack compiled in).
+ureq = { version = "2", default-features = false, features = ["json"] }
+
+[[bin]]
+name = "reflex-study"
+path = "src/bin/reflex-study.rs"
+
+[[bin]]
+name = "ladder"
+path = "src/bin/ladder.rs"
