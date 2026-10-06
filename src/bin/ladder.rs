@@ -22,6 +22,9 @@ const USAGE: &str = "usage:
                where an unsure set is answered or reviewed — defaults to --alpha)
                (the escalator: conformal acceptance fitted on verified rows NOT used for training)
   ladder eval  --ladder LADDER.json --cases CASES.jsonl [--embed-cache FILE] [--chat-cache FILE] [--no-llm]
+  ladder rulebook check  --rulebook RULEBOOK.json
+  ladder rulebook render --rulebook RULEBOOK.json --guide-out GUIDE.txt --descriptions-out LABELS.json
+               (one labelling rulebook → the llm rung's --guide and the options' --descriptions)
   ladder serve --ladder LADDER.json [--ladder ...] [--bind 127.0.0.1:7342] [--embed-cache FILE]
 
 ROWS / CASES: one JSON object per line, {\"text\": \"...\", \"label\": \"...\"}
@@ -54,6 +57,10 @@ struct Args {
     when_unsure: Option<String>,
     guide: Option<String>,
     bind: Option<String>,
+    sub: Option<String>,
+    rulebook: Option<String>,
+    guide_out: Option<String>,
+    descriptions_out: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -63,6 +70,9 @@ fn parse_args() -> Result<Args, String> {
         encoder: Some(heimdall::DEFAULT_EMBED_MODEL.into()),
         ..Args::default()
     };
+    if a.cmd == "rulebook" {
+        a.sub = Some(it.next().ok_or(USAGE)?);
+    }
     while let Some(flag) = it.next() {
         let mut val = || it.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
@@ -87,6 +97,9 @@ fn parse_args() -> Result<Args, String> {
             "--when-unsure" => a.when_unsure = Some(val()?),
             "--guide" => a.guide = Some(val()?),
             "--bind" => a.bind = Some(val()?),
+            "--rulebook" => a.rulebook = Some(val()?),
+            "--guide-out" => a.guide_out = Some(val()?),
+            "--descriptions-out" => a.descriptions_out = Some(val()?),
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown flag {other}\n\n{USAGE}")),
         }
@@ -110,12 +123,39 @@ fn main() {
         "calibrate" => calibrate(&a),
         "eval" => eval(&a),
         "serve" => serve(&a),
+        "rulebook" => rulebook(&a),
         _ => Err(USAGE.into()),
     });
     if let Err(e) = result {
         eprintln!("{e}");
         std::process::exit(1);
     }
+}
+
+fn rulebook(a: &Args) -> Result<(), String> {
+    let path = a.rulebook.as_deref().ok_or("rulebook needs --rulebook")?;
+    let rb = reflex_study::rulebook::Rulebook::load(path)?;
+    let problems = rb.problems();
+    if !problems.is_empty() {
+        return Err(format!("{path}: {} problem(s)\n  {}", problems.len(), problems.join("\n  ")));
+    }
+    match a.sub.as_deref() {
+        Some("check") => {}
+        Some("render") => {
+            let g = a.guide_out.as_deref().ok_or("rulebook render needs --guide-out")?;
+            let d = a.descriptions_out.as_deref().ok_or("rulebook render needs --descriptions-out")?;
+            std::fs::write(g, rb.guide()).map_err(|e| format!("{g}: {e}"))?;
+            let json = serde_json::to_string_pretty(&rb.descriptions()).map_err(|e| e.to_string())?;
+            std::fs::write(d, json + "\n").map_err(|e| format!("{d}: {e}"))?;
+            println!("wrote {g} and {d}");
+        }
+        _ => return Err(USAGE.into()),
+    }
+    println!(
+        "rulebook {} {} · id {} · {} labels · {} rules · ok",
+        rb.name, rb.version, &rb.id()[..16], rb.labels.len(), rb.rules.len()
+    );
+    Ok(())
 }
 
 fn train(a: &Args) -> Result<(), String> {

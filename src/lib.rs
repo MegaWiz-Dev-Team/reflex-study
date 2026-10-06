@@ -27,6 +27,7 @@ pub mod gate;
 pub mod heimdall;
 pub mod http;
 pub mod ladder;
+pub mod rulebook;
 pub mod threshold;
 pub mod tokenize;
 pub mod wire;

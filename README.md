@@ -115,6 +115,23 @@ $B serve --ladder frontdesk.escalator.json      # คำตอบมี "rate_gu
   ให้ LLM อ่านนิยามชุดเดียวกับคนติด label และตัว gen ข้อมูล · อยู่ในไฟล์ ladder จึงอยู่ใน digest และ receipt · ตั้ง guide ใหม่แล้ว calibration เดิมถูกล้าง ต้อง calibrate ใหม่
 - ไฟล์ ladder รุ่นเดิม (ไม่มี `conformal`) ทำงานและ serialize เหมือนเดิมทุก byte — `tests/escalator.rs`
 
+## Rulebook: นิยามของ label ชุดเดียวที่ทุกฝ่ายอ่าน (`ladder rulebook`, ตั้งแต่ 0.4.0)
+
+rulebook คือไฟล์ JSON ไฟล์เดียวที่เก็บนิยามของทุก label พร้อมตัวอย่าง ตัวอย่างที่ใกล้เคียงแต่ไม่ใช่ ลำดับความสำคัญ (เมื่อข้อความเดียวเข้าได้หลาย label) และกฎเส้นแบ่ง
+กฎแต่ละข้อมี id, ที่มา, เงื่อนไขก่อนใช้ (`when`) และ KG triple ได้ ทั้งเล่มมี id แบบ BLAKE3 ซึ่งเปลี่ยนทุกครั้งที่เนื้อหาเปลี่ยน
+รูปแบบนี้ยืมมาจาก rulebook ของ Tetris ใน [katgpt-rs](https://github.com/katopz/katgpt-rs/blob/develop/crates/katgpt-tetris/src/rulebook.rs) ของ katopz
+
+```sh
+$B rulebook check  --rulebook rulebook.json
+$B rulebook render --rulebook rulebook.json --guide-out guide.txt --descriptions-out labels.json
+$B train --task T --train train.jsonl --out t.json --descriptions labels.json --guide guide.txt --llm gemma-4-26b
+```
+
+- คนติด label, ตัวสร้างข้อมูล และชั้น LLM อ่าน rulebook เล่มเดียวกัน guide อยู่ในไฟล์ ladder จึงอยู่ใน digest ด้วย
+- id ตรงกับ `blake3(json.dumps(rb, sort_keys=True, ensure_ascii=False, separators=(",", ":")))` ของ Python เครื่องมือทั้งสองภาษาจึงได้ id เดียวกัน
+- **ตัวอย่างที่รันได้ทันที (offline):** [`examples/frontdesk-rulebook/`](examples/frontdesk-rulebook/) ส่งข้อความถึงเคาน์เตอร์โรงพยาบาลไป 3 แผนก
+  และเทียบบันไดที่ต่างกันแค่ guide (นิยามสั้น vs rulebook ทั้งเล่ม)
+
 ## สิ่งที่ implement
 
 | ไฟล์ | หน้าที่ |
