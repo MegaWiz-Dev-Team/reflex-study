@@ -111,6 +111,8 @@ $B serve --ladder frontdesk.escalator.json      # คำตอบมี "rate_gu
   (`Chat::top_logprobs`; mlx_lm.server รับ `top_logprobs` ได้ไม่เกิน 11)
 - **rate guard** (ไอเดียจาก Rethink): เทียบสัดส่วนที่แต่ละชั้นตอบใน N ครั้งล่าสุดกับตอน calibrate; ผลลัพธ์ที่ไม่เคยเห็นตอน calibrate นับเป็น 0%
 - ข้อจำกัด: ชุดคำตอบเลือกได้แค่ "ระหว่าง label" — ข้อความนอกเรื่องยังเป็นหน้าที่ของ novelty gate; จุดตัดจากแถวไม่กี่สิบแถวยังแกว่ง
+- **คู่มือการติด label** (`train --guide FILE`, ตั้งแต่ 0.3.0): ข้อความ เช่น rulebook ที่มีลำดับความสำคัญและกฎเส้นแบ่ง วางไว้ก่อนตัวเลือกใน prompt ของชั้น LLM
+  ให้ LLM อ่านนิยามชุดเดียวกับคนติด label และตัว gen ข้อมูล · อยู่ในไฟล์ ladder จึงอยู่ใน digest และ receipt · ตั้ง guide ใหม่แล้ว calibration เดิมถูกล้าง ต้อง calibrate ใหม่
 - ไฟล์ ladder รุ่นเดิม (ไม่มี `conformal`) ทำงานและ serialize เหมือนเดิมทุก byte — `tests/escalator.rs`
 
 ## สิ่งที่ implement
