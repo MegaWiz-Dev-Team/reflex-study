@@ -2,9 +2,9 @@
 //! `ladder eval`  — run a ladder over labeled cases: coverage and accuracy per rung.
 //! `ladder serve` — `POST /v1/classify {"task", "text"}` on loopback for one or more ladders.
 
-use reflex_study::heimdall::{self, Chat, Embed, HeimdallChat, HeimdallEmbed};
+use reflex_study::heimdall::{self, CachedChat, Chat, Embed, HeimdallChat, HeimdallEmbed};
 use reflex_study::http;
-use reflex_study::ladder::{Example, Ladder, LadderConfig};
+use reflex_study::ladder::{Example, Ladder, LadderConfig, RateGuard};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -15,7 +15,10 @@ const USAGE: &str = "usage:
                [--descriptions LABELS.json] [--target 0.9] [--folds 4]
                [--encoder BAAI/bge-m3 | --no-encoder] [--llm gemma-4-26b] [--embed-cache FILE]
                [--lexical bag|nbsvm|nbsvm-distill[:mix]|auto]   (auto = Ultra Instinct: gate-selected)
-  ladder eval  --ladder LADDER.json --cases CASES.jsonl [--embed-cache FILE] [--no-llm]
+  ladder calibrate --ladder LADDER.json --verified ROWS.jsonl --out LADDER2.json
+               [--alpha 0.1] [--when-unsure answer|review] [--embed-cache FILE] [--chat-cache FILE]
+               (the escalator: conformal acceptance fitted on verified rows NOT used for training)
+  ladder eval  --ladder LADDER.json --cases CASES.jsonl [--embed-cache FILE] [--chat-cache FILE] [--no-llm]
   ladder serve --ladder LADDER.json [--ladder ...] [--bind 127.0.0.1:7342] [--embed-cache FILE]
 
 ROWS / CASES: one JSON object per line, {\"text\": \"...\", \"label\": \"...\"}
@@ -41,6 +44,10 @@ struct Args {
     no_llm: bool,
     lexical: Option<String>,
     embed_cache: Option<PathBuf>,
+    chat_cache: Option<PathBuf>,
+    verified: Option<String>,
+    alpha: Option<f64>,
+    when_unsure: Option<String>,
     bind: Option<String>,
 }
 
@@ -68,6 +75,10 @@ fn parse_args() -> Result<Args, String> {
             "--no-llm" => a.no_llm = true,
             "--lexical" => a.lexical = Some(val()?),
             "--embed-cache" => a.embed_cache = Some(PathBuf::from(val()?)),
+            "--chat-cache" => a.chat_cache = Some(PathBuf::from(val()?)),
+            "--verified" => a.verified = Some(val()?),
+            "--alpha" => a.alpha = Some(val()?.parse().map_err(|e| format!("--alpha: {e}"))?),
+            "--when-unsure" => a.when_unsure = Some(val()?),
             "--bind" => a.bind = Some(val()?),
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown flag {other}\n\n{USAGE}")),
@@ -89,6 +100,7 @@ fn read_jsonl<T: for<'de> Deserialize<'de>>(path: &str) -> Result<Vec<T>, String
 fn main() {
     let result = parse_args().and_then(|a| match a.cmd.as_str() {
         "train" => train(&a),
+        "calibrate" => calibrate(&a),
         "eval" => eval(&a),
         "serve" => serve(&a),
         _ => Err(USAGE.into()),
@@ -175,27 +187,60 @@ struct Case {
 
 struct Clients {
     embed: Option<HeimdallEmbed>,
-    chat: Option<HeimdallChat>,
+    chat: Option<Box<dyn Chat>>,
 }
 
 impl Clients {
-    fn for_ladders(ladders: &[Ladder], cache: Option<PathBuf>, no_llm: bool) -> Self {
+    fn with_chat_cache(ladders: &[Ladder], cache: Option<PathBuf>, no_llm: bool, chat_cache: Option<PathBuf>) -> Self {
         let embed = ladders.iter().find_map(|l| l.encoder.as_ref()).map(|e| HeimdallEmbed::new(&e.model, cache));
-        let chat = if no_llm { None } else { ladders.iter().find_map(|l| l.llm.as_deref()).map(HeimdallChat::new) };
+        let chat: Option<Box<dyn Chat>> = if no_llm {
+            None
+        } else {
+            ladders.iter().find_map(|l| l.llm.as_deref()).map(|m| match &chat_cache {
+                Some(p) => Box::new(CachedChat::new(HeimdallChat::new(m), p.clone())) as Box<dyn Chat>,
+                None => Box::new(HeimdallChat::new(m)) as Box<dyn Chat>,
+            })
+        };
         Self { embed, chat }
     }
     fn embed(&self) -> Option<&dyn Embed> {
         self.embed.as_ref().map(|e| e as &dyn Embed)
     }
     fn chat(&self) -> Option<&dyn Chat> {
-        self.chat.as_ref().map(|c| c as &dyn Chat)
+        self.chat.as_deref()
     }
+}
+
+fn calibrate(a: &Args) -> Result<(), String> {
+    let path = a.ladders.first().ok_or("calibrate needs --ladder")?;
+    let mut ladder = Ladder::load(&PathBuf::from(path))?;
+    let verified: Vec<Example> = read_jsonl(a.verified.as_deref().ok_or("calibrate needs --verified")?)?;
+    let out = PathBuf::from(a.out.as_deref().ok_or("calibrate needs --out")?);
+    let clients = Clients::with_chat_cache(std::slice::from_ref(&ladder), a.embed_cache.clone(), false, a.chat_cache.clone());
+    let alpha = a.alpha.unwrap_or(0.1);
+    let when = a.when_unsure.as_deref().unwrap_or("answer");
+    ladder.calibrate_conformal(&verified, alpha, when, clients.embed(), clients.chat())?;
+    ladder.save(&out)?;
+    let cf = ladder.conformal.as_ref().expect("just calibrated");
+    let q = |v: Option<f64>| v.map_or("never answers (too few rows for α)".into(), |q| format!("answers when one label has p ≥ {:.3}", 1.0 - q));
+    println!("escalator · α {alpha} · {} verified rows · when unsure: {when}", cf.n);
+    println!("  lexical  {}", q(cf.lexical_qhat));
+    if ladder.encoder.is_some() {
+        println!("  encoder  {}", q(cf.encoder_qhat));
+    }
+    if ladder.llm.is_some() {
+        println!("  llm      {}", q(cf.llm_qhat));
+    }
+    println!("  shares on the calibration rows: {}", cf.shares.iter().map(|(k, v)| format!("{k} {:.0}%", v * 100.0)).collect::<Vec<_>>().join(" · "));
+    println!("wrote {} · digest {}", out.display(), ladder.digest());
+    Ok(())
 }
 
 fn eval(a: &Args) -> Result<(), String> {
     let ladder = Ladder::load(&PathBuf::from(a.ladders.first().ok_or("eval needs --ladder")?))?;
     let cases: Vec<Case> = read_jsonl(a.cases.as_deref().ok_or("eval needs --cases")?)?;
-    let clients = Clients::for_ladders(std::slice::from_ref(&ladder), a.embed_cache.clone(), a.no_llm);
+    let clients = Clients::with_chat_cache(std::slice::from_ref(&ladder), a.embed_cache.clone(), a.no_llm, a.chat_cache.clone());
+    let mut reviews = 0usize;
     // per rung: (answered, right); plus latency samples
     let mut per: BTreeMap<&str, (usize, usize, Vec<u64>)> = BTreeMap::new();
     let (mut n_in, mut answered, mut right, mut off, mut off_abstained) = (0, 0, 0, 0, 0);
@@ -215,6 +260,11 @@ fn eval(a: &Args) -> Result<(), String> {
                 e.0 += 1;
                 e.1 += ok as usize;
                 if ok { "right" } else { "WRONG" }
+            }
+            (Some(_), None) if ans.rung == Some("review") => {
+                n_in += 1;
+                reviews += 1;
+                "review"
             }
             (Some(_), None) => {
                 n_in += 1;
@@ -247,6 +297,12 @@ fn eval(a: &Args) -> Result<(), String> {
         100.0 * answered as f64 / n_in.max(1) as f64,
         if answered > 0 { format!("{:.3}", right as f64 / answered as f64) } else { "n/a".into() }
     );
+    if reviews > 0 {
+        println!("sent for a person's review: {reviews}");
+    }
+    if let Some(cf) = &ladder.conformal {
+        println!("escalator: α {} · calibrated on {} rows · when unsure: {}", cf.alpha, cf.n, cf.when_unsure);
+    }
     if off > 0 {
         println!("off-task n={off}: abstained {off_abstained}");
     }
@@ -266,8 +322,11 @@ fn serve(a: &Args) -> Result<(), String> {
         return Err("serve needs at least one --ladder".into());
     }
     let ladders: Vec<Ladder> = a.ladders.iter().map(|p| Ladder::load(&PathBuf::from(p))).collect::<Result<_, _>>()?;
-    let clients = Clients::for_ladders(&ladders, a.embed_cache.clone(), a.no_llm);
+    let clients = Clients::with_chat_cache(&ladders, a.embed_cache.clone(), a.no_llm, a.chat_cache.clone());
     let bind = a.bind.clone().unwrap_or_else(|| "127.0.0.1:7342".into());
+    // One rate guard per escalator ladder, over its last 200 decisions.
+    let guards: Vec<std::sync::Mutex<Option<RateGuard>>> =
+        ladders.iter().map(|l| std::sync::Mutex::new(l.conformal.as_ref().map(|cf| RateGuard::new(cf, 200)))).collect();
     for l in &ladders {
         eprintln!(
             "[ladder] task {} · labels {} · rungs lexical{}{} · digest {}",
@@ -294,9 +353,18 @@ fn serve(a: &Args) -> Result<(), String> {
             ("GET", "/healthz") => (200, health.clone()),
             ("POST", "/v1/classify") => match serde_json::from_slice::<Req>(body) {
                 Err(e) => (400, http::error_json(&e.to_string())),
-                Ok(r) => match ladders.iter().find(|l| l.task == r.task) {
+                Ok(r) => match ladders.iter().position(|l| l.task == r.task) {
                     None => (422, http::error_json(&format!("unknown task {:?}", r.task))),
-                    Some(l) => (200, serde_json::to_string(&l.decide(&r.text, clients.embed(), clients.chat())).expect("answer serializes")),
+                    Some(i) => {
+                        let ans = ladders[i].decide(&r.text, clients.embed(), clients.chat());
+                        let mut v = serde_json::to_value(&ans).expect("answer serializes");
+                        let warning = guards[i].lock().expect("rate guard lock").as_mut().and_then(|g| g.observe(ans.rung.unwrap_or("none")));
+                        if let Some(w) = warning {
+                            eprintln!("[ladder] {}: {w}", ladders[i].task);
+                            v["rate_guard"] = serde_json::Value::String(w);
+                        }
+                        (200, v.to_string())
+                    }
                 },
             },
             _ => (404, r#"{"error":"not found"}"#.into()),

@@ -19,6 +19,19 @@
 //! nearest-neighbour cosine measured out-of-fold on the training rows (no off-task data
 //! needed; ρ = 0.05 lets ~5% of in-distribution inputs through to the next rung). Below it,
 //! the rung passes the input up no matter how confident it is.
+//!
+//! **The escalator (บันไดเลื่อน, v2).** With [`Ladder::calibrate_conformal`] the per-rung
+//! thresholds give way to split-conformal acceptance: on `n` verified rows the ladder was NOT
+//! trained on, each rung's nonconformity score `1 − p̂(true label)` sets a cutoff `q̂` at rank
+//! ⌈(n+1)(1−α)⌉, and at decision time a rung answers only when its set `{label : 1 − p̂ ≤ q̂}`
+//! holds exactly one label (and the novelty gate agrees). Under exchangeability each set covers
+//! the true label with probability ≥ 1 − α. The llm rung reads a label distribution from the
+//! chat model's next-token log-probabilities over option letters (one forward pass); when even
+//! its set is not one label the answer is either its top label (`when_unsure = "answer"`,
+//! practice) or `rung = "review"` with the set, for a person to decide (`"review"`, exams).
+//! Conformal sets only choose AMONG the labels: off-task text is still the novelty gates' job
+//! (a known leak in the frontdesk tests stays a leak), and calibration rows must be distinct
+//! from training rows — the check refuses the exact training set, not a partial overlap.
 
 use crate::features::{self, Sparse};
 use crate::heimdall::{Chat, Embed};
@@ -208,6 +221,9 @@ pub struct Ladder {
     pub encoder: Option<EncoderRung>,
     /// The chat model of the llm rung; `None` = no llm rung.
     pub llm: Option<String>,
+    /// Escalator mode: conformal acceptance replaces the per-rung thresholds. Absent = v1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conformal: Option<Conformal>,
     /// BLAKE3 of the ladder file's bytes (`save` writes exactly what `fit` hashed).
     #[serde(skip)]
     digest: String,
@@ -244,6 +260,112 @@ pub struct Answer {
     pub confidence: Option<f32>,
     pub steps: Vec<Step>,
     pub receipt: Receipt,
+    /// Escalator, `when_unsure = "review"`: the llm rung's conformal set, for a person to decide
+    /// (`label` is then `None` and `rung` is `"review"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<Vec<String>>,
+}
+
+/// The escalator's calibration (see the module doc).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Conformal {
+    pub alpha: f64,
+    /// Verified rows the cutoffs were fitted on, and BLAKE3 of them (text \t label \n).
+    pub n: usize,
+    pub calibration_digest: String,
+    /// Cutoffs on `1 − p̂(label)`; `None` = too few rows for this α, the rung never answers.
+    pub lexical_qhat: Option<f64>,
+    pub encoder_qhat: Option<f64>,
+    pub llm_qhat: Option<f64>,
+    /// `"answer"` (take the llm rung's top label) or `"review"` (return the set for a person).
+    pub when_unsure: String,
+    /// Share of the calibration rows each outcome took (`lexical`, `encoder`, `llm`, `review`,
+    /// `none`) — the band [`RateGuard`] watches at serving time.
+    pub shares: BTreeMap<String, f64>,
+}
+
+/// The cutoff `q̂`: the ⌈(n+1)(1−α)⌉-th smallest nonconformity score, or `None` when that rank
+/// exceeds `n` (too few rows to promise 1 − α).
+pub fn conformal_qhat(scores: &[f64], alpha: f64) -> Option<f64> {
+    let n = scores.len();
+    let k = ((n as f64 + 1.0) * (1.0 - alpha)).ceil() as usize;
+    if k == 0 || k > n {
+        return None;
+    }
+    let mut s = scores.to_vec();
+    s.sort_by(f64::total_cmp);
+    Some(s[k - 1])
+}
+
+/// Labels whose `1 − p̂ ≤ q̂`, most probable first.
+pub fn conformal_set(p: &[f32], qhat: f64) -> Vec<usize> {
+    let mut set: Vec<usize> = (0..p.len()).filter(|&c| 1.0 - p[c] as f64 <= qhat).collect();
+    set.sort_by(|&a, &b| p[b].total_cmp(&p[a]).then(a.cmp(&b)));
+    set
+}
+
+/// One-vs-all sigmoid scores rescaled to sum to 1 (the probabilities the escalator compares).
+fn normalized(s: Vec<f32>) -> Vec<f32> {
+    let t: f32 = s.iter().sum();
+    if t > 0.0 { s.into_iter().map(|v| v / t).collect() } else { s }
+}
+
+fn argmax(p: &[f32]) -> usize {
+    (1..p.len()).fold(0, |b, c| if p[c] > p[b] { c } else { b })
+}
+
+/// `(top, p̂(top), answers, probability cutoff 1 − q̂, note)` for one rung under a cutoff.
+fn conformal_accept(p: &[f32], qhat: Option<f64>, labels: &[String]) -> (usize, f32, bool, Option<f32>, Option<String>) {
+    let top = argmax(p);
+    match qhat {
+        None => (top, p[top], false, None, Some("conformal: too few calibration rows for this α — passed up".into())),
+        Some(q) => {
+            let set = conformal_set(p, q);
+            let single = set.len() == 1;
+            let note = (!single).then(|| format!("conformal set {{{}}} — passed up", set.iter().map(|&i| labels[i].as_str()).collect::<Vec<_>>().join(", ")));
+            (top, p[top], single, Some((1.0 - q) as f32), note)
+        }
+    }
+}
+
+/// The serving-time check (Rethink's rate guard): each outcome's share over the last `size`
+/// decisions should stay near its share at calibration. `observe` names any outcome whose share
+/// left the band `3·√(e(1−e)/size) + 0.05` — a sign the inputs no longer look like the rows the
+/// cutoffs were fitted on.
+pub struct RateGuard {
+    expected: BTreeMap<String, f64>,
+    window: std::collections::VecDeque<String>,
+    size: usize,
+}
+
+impl RateGuard {
+    pub fn new(cf: &Conformal, size: usize) -> Self {
+        Self { expected: cf.shares.clone(), window: Default::default(), size: size.max(1) }
+    }
+
+    pub fn observe(&mut self, outcome: &str) -> Option<String> {
+        self.window.push_back(outcome.to_string());
+        if self.window.len() > self.size {
+            self.window.pop_front();
+        }
+        if self.window.len() < self.size {
+            return None;
+        }
+        let n = self.size as f64;
+        // Outcomes never seen at calibration count as expected 0% (e.g. a sudden run of reviews).
+        let mut keys: Vec<&String> = self.expected.keys().chain(self.window.iter()).collect();
+        keys.sort();
+        keys.dedup();
+        let drift: Vec<String> = keys
+            .into_iter()
+            .filter_map(|k| {
+                let e = self.expected.get(k).copied().unwrap_or(0.0);
+                let obs = self.window.iter().filter(|w| *w == k).count() as f64 / n;
+                ((obs - e).abs() > 3.0 * (e * (1.0 - e) / n).sqrt() + 0.05).then(|| format!("{k} {:.0}% (calibration {:.0}%)", obs * 100.0, e * 100.0))
+            })
+            .collect();
+        (!drift.is_empty()).then(|| format!("rate guard: over the last {} decisions {}", self.size, drift.join(", ")))
+    }
 }
 
 fn hex(b: &[u8]) -> String {
@@ -401,6 +523,7 @@ impl Ladder {
             lexical_choice,
             encoder,
             llm: llm_model.map(str::to_string),
+            conformal: None,
             digest: String::new(),
         };
         ladder.digest = hex(&ladder.to_bytes());
@@ -533,6 +656,143 @@ impl Ladder {
         self.labels.iter().find(|l| l.eq_ignore_ascii_case(word)).cloned()
     }
 
+    /// The escalator's llm prompt: the labels as lettered options (A, B, …), answered with one
+    /// letter so the first token's log-probabilities are the label distribution.
+    pub fn llm_letter_prompt(&self) -> String {
+        let mut s = format!("Classify the user's message for the task \"{}\". The options:\n", self.task);
+        for (i, l) in self.labels.iter().enumerate() {
+            let letter = (b'A' + i as u8) as char;
+            match self.descriptions.get(l) {
+                Some(d) => s.push_str(&format!("{letter}) {l}: {d}\n")),
+                None => s.push_str(&format!("{letter}) {l}\n")),
+            }
+        }
+        s.push_str("Reply with the single letter of the best option.");
+        s
+    }
+
+    /// The label distribution in a first-token top-k: a token counts for option `X` when it is
+    /// the letter `X` alone or followed by punctuation (`"B"`, `" B"`, `"B)"`); letters missing
+    /// from the top-k get a log-probability below every listed one; then softmax.
+    pub fn llm_distribution(&self, top: &[(String, f32)]) -> Result<Vec<f32>, String> {
+        let n = self.labels.len();
+        if n > 26 {
+            return Err(format!("llm: {n} labels — letter options stop at 26"));
+        }
+        let mut lp: Vec<Option<f32>> = vec![None; n];
+        for (tok, l) in top {
+            let t = tok.trim();
+            let mut chars = t.chars();
+            let (Some(first), rest) = (chars.next(), chars.as_str()) else { continue };
+            let up = first.to_ascii_uppercase();
+            if !up.is_ascii_uppercase() || rest.chars().next().is_some_and(char::is_alphanumeric) {
+                continue;
+            }
+            let i = (up as u8 - b'A') as usize;
+            if i < n && lp[i].is_none_or(|v| *l > v) {
+                lp[i] = Some(*l);
+            }
+        }
+        if lp.iter().all(Option::is_none) {
+            return Err("llm: no option letter among the first-token alternatives".into());
+        }
+        let floor = top.iter().map(|(_, l)| *l).fold(-30.0f32, f32::min) - 1.0;
+        let z: Vec<f32> = lp.iter().map(|v| v.unwrap_or(floor).exp()).collect();
+        let t: f32 = z.iter().sum();
+        Ok(z.into_iter().map(|v| v / t).collect())
+    }
+
+    /// Switch to the escalator: fit each rung's conformal cutoff on `verified` rows — rows the
+    /// ladder was NOT trained on, labeled by people — and record the share each outcome takes.
+    /// The heads, gates and memory are untouched. Every rung the ladder has must be reachable:
+    /// an encoder rung needs `embed`, an llm rung needs `chat` (it is called once per row).
+    pub fn calibrate_conformal(
+        &mut self,
+        verified: &[Example],
+        alpha: f64,
+        when_unsure: &str,
+        embed: Option<&dyn Embed>,
+        chat: Option<&dyn Chat>,
+    ) -> Result<(), String> {
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(format!("alpha {alpha}: must be in (0, 1)"));
+        }
+        if !matches!(when_unsure, "answer" | "review") {
+            return Err(format!("when_unsure {when_unsure:?}: answer | review"));
+        }
+        if verified.is_empty() {
+            return Err("no verified rows".into());
+        }
+        let digest = hex(verified.iter().map(|e| format!("{}\t{}\n", e.text, e.label)).collect::<String>().as_bytes());
+        if digest == self.training_digest {
+            return Err("these are the training rows — conformal cutoffs need rows the ladder was not trained on".into());
+        }
+        let y: Vec<usize> = verified
+            .iter()
+            .map(|e| self.labels.binary_search(&e.label).map_err(|_| format!("label {:?} is not one of this ladder's", e.label)))
+            .collect::<Result<_, _>>()?;
+        let score = |p: &[Vec<f32>]| -> Vec<f64> { p.iter().zip(&y).map(|(p, &g)| 1.0 - p[g] as f64).collect() };
+        let tok = Tokenizer::parse(&self.tokenizer).unwrap_or(Tokenizer::Unicode);
+        let lex: Vec<Vec<f32>> = verified.iter().map(|e| normalized(self.lexical.scores(&self.lexical_x(&e.text)))).collect();
+        let lex_inside: Vec<bool> = verified.iter().map(|e| self.lexical_gate.check(&features::lexical(tok, &e.text)).1).collect();
+        let lexical_qhat = conformal_qhat(&score(&lex), alpha);
+        let (enc, enc_inside, encoder_qhat) = match &self.encoder {
+            None => (None, vec![], None),
+            Some(rung) => {
+                let em = embed.ok_or("this ladder has an encoder rung: calibration needs the encoder client")?;
+                if em.model() != rung.model {
+                    return Err(format!("encoder is {}, ladder was trained on {}", em.model(), rung.model));
+                }
+                let texts: Vec<String> = verified.iter().map(|e| e.text.clone()).collect();
+                let rows: Vec<Sparse> = em.embed(&texts)?.iter().map(|v| features::dense(v)).collect();
+                let p: Vec<Vec<f32>> = rows.iter().map(|x| normalized(rung.head.scores(x))).collect();
+                let inside = rows.iter().map(|x| rung.gate.check(x).1).collect();
+                let q = conformal_qhat(&score(&p), alpha);
+                (Some(p), inside, q)
+            }
+        };
+        let (llm, llm_qhat) = match &self.llm {
+            None => (None, None),
+            Some(model) => {
+                let ch = chat.ok_or("this ladder has an llm rung: calibration needs the chat client")?;
+                if ch.model() != model {
+                    return Err(format!("chat model is {}, ladder names {model}", ch.model()));
+                }
+                let prompt = self.llm_letter_prompt();
+                let p: Vec<Vec<f32>> = verified.iter().map(|e| ch.top_logprobs(&prompt, &e.text).and_then(|t| self.llm_distribution(&t))).collect::<Result<_, _>>()?;
+                let q = conformal_qhat(&score(&p), alpha);
+                (Some(p), q)
+            }
+        };
+        let single = |p: &[f32], q: Option<f64>| q.is_some_and(|q| conformal_set(p, q).len() == 1);
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for i in 0..verified.len() {
+            let outcome = if single(&lex[i], lexical_qhat) && lex_inside[i] {
+                "lexical"
+            } else if enc.as_ref().is_some_and(|p| single(&p[i], encoder_qhat) && enc_inside[i]) {
+                "encoder"
+            } else if let Some(p) = &llm {
+                if single(&p[i], llm_qhat) || when_unsure == "answer" { "llm" } else { "review" }
+            } else {
+                "none"
+            };
+            *counts.entry(outcome.to_string()).or_default() += 1;
+        }
+        let n = verified.len();
+        self.conformal = Some(Conformal {
+            alpha,
+            n,
+            calibration_digest: digest,
+            lexical_qhat,
+            encoder_qhat,
+            llm_qhat,
+            when_unsure: when_unsure.to_string(),
+            shares: counts.into_iter().map(|(k, c)| (k, c as f64 / n as f64)).collect(),
+        });
+        self.digest = hex(&self.to_bytes());
+        Ok(())
+    }
+
     /// Run the ladder. A rung whose client is absent (`None`) or fails is skipped with a note —
     /// never silently treated as an answer.
     pub fn decide(&self, text: &str, embed: Option<&dyn Embed>, llm: Option<&dyn Chat>) -> Answer {
@@ -540,20 +800,26 @@ impl Ladder {
         let mut steps = Vec::new();
         let t = Instant::now();
         let x = features::lexical(tok, text);
-        let (c, s) = if self.lexical_features == "presence" { self.lexical.top(&features::presence(tok, text)) } else { self.lexical.top(&x) };
+        let lx = if self.lexical_features == "presence" { features::presence(tok, text) } else { x.clone() };
         let (sim, inside) = self.lexical_gate.check(&x);
-        let confident = self.lexical_fit.threshold.is_some_and(|th| s >= th);
+        let (c, s, confident, threshold, set_note) = match &self.conformal {
+            None => {
+                let (c, s) = self.lexical.top(&lx);
+                (c, s, self.lexical_fit.threshold.is_some_and(|th| s >= th), self.lexical_fit.threshold, None)
+            }
+            Some(cf) => conformal_accept(&normalized(self.lexical.scores(&lx)), cf.lexical_qhat, &self.labels),
+        };
         let passed = confident && inside;
         steps.push(Step {
             rung: "lexical",
             label: Some(self.labels[c].clone()),
             confidence: Some(s),
-            threshold: self.lexical_fit.threshold,
+            threshold,
             similarity: Some(sim),
             gate: self.lexical_gate.cutoff,
             passed,
             micros: t.elapsed().as_micros() as u64,
-            note: (confident && !inside).then(|| "confident but unlike the training rows — passed up".into()),
+            note: if confident && !inside { Some("confident but unlike the training rows — passed up".into()) } else { set_note },
         });
 
         if !passed && let Some(enc) = &self.encoder {
@@ -586,19 +852,24 @@ impl Ladder {
                                 note: Some(format!("nearest verified example: {}", m.texts[j])),
                             }
                         } else {
-                            let (c, s) = enc.head.top(&x);
                             let (sim, inside) = enc.gate.check(&x);
-                            let confident = enc.fit.threshold.is_some_and(|th| s >= th);
+                            let (c, s, confident, threshold, set_note) = match &self.conformal {
+                                None => {
+                                    let (c, s) = enc.head.top(&x);
+                                    (c, s, enc.fit.threshold.is_some_and(|th| s >= th), enc.fit.threshold, None)
+                                }
+                                Some(cf) => conformal_accept(&normalized(enc.head.scores(&x)), cf.encoder_qhat, &self.labels),
+                            };
                             Step {
                                 rung: "encoder",
                                 label: Some(self.labels[c].clone()),
                                 confidence: Some(s),
-                                threshold: enc.fit.threshold,
+                                threshold,
                                 similarity: Some(sim),
                                 gate: enc.gate.cutoff,
                                 passed: confident && inside,
                                 micros: t.elapsed().as_micros() as u64,
-                                note: (confident && !inside).then(|| "confident but unlike the training rows — passed up".into()),
+                                note: if confident && !inside { Some("confident but unlike the training rows — passed up".into()) } else { set_note },
                             }
                         }
                     }
@@ -607,10 +878,43 @@ impl Ladder {
             steps.push(step);
         }
 
+        let mut review: Option<Vec<String>> = None;
         if !steps.last().is_some_and(|s| s.passed) && let Some(model) = &self.llm {
             let t = Instant::now();
             let step = match llm {
                 None => Step { rung: "llm", label: None, confidence: None, threshold: None, similarity: None, gate: None, passed: false, micros: 0, note: Some("no chat client".into()) },
+                Some(ch) if self.conformal.is_some() => {
+                    let cf = self.conformal.as_ref().expect("checked");
+                    match ch.top_logprobs(&self.llm_letter_prompt(), text).and_then(|top| self.llm_distribution(&top)) {
+                        Err(e) => Step { rung: "llm", label: None, confidence: None, threshold: None, similarity: None, gate: None, passed: false, micros: t.elapsed().as_micros() as u64, note: Some(e) },
+                        Ok(p) => {
+                            let (c, pc, single, threshold, set_note) = conformal_accept(&p, cf.llm_qhat, &self.labels);
+                            let answer_anyway = !single && cf.when_unsure == "answer";
+                            if !single && !answer_anyway {
+                                let mut set = cf.llm_qhat.map(|q| conformal_set(&p, q)).unwrap_or_default();
+                                if set.is_empty() {
+                                    set = conformal_set(&p, 1.0).into_iter().take(2).collect();
+                                }
+                                review = Some(set.iter().map(|&i| self.labels[i].clone()).collect());
+                            }
+                            Step {
+                                rung: "llm",
+                                label: Some(self.labels[c].clone()),
+                                confidence: Some(pc),
+                                threshold,
+                                similarity: None,
+                                gate: None,
+                                passed: single || answer_anyway,
+                                micros: t.elapsed().as_micros() as u64,
+                                note: if answer_anyway {
+                                    Some(format!("{model}: not one label at α — answered with its top label (when_unsure = answer)"))
+                                } else {
+                                    set_note.map(|n| format!("{model}: {n}"))
+                                },
+                            }
+                        }
+                    }
+                }
                 Some(ch) => match ch.complete(&self.llm_prompt(), text) {
                     Err(e) => Step { rung: "llm", label: None, confidence: None, threshold: None, similarity: None, gate: None, passed: false, micros: t.elapsed().as_micros() as u64, note: Some(e) },
                     Ok(reply) => {
@@ -633,9 +937,10 @@ impl Ladder {
         }
 
         let winner = steps.iter().find(|s| s.passed);
-        let (label, rung, confidence) = match winner {
-            Some(s) => (s.label.clone(), Some(s.rung), s.confidence),
-            None => (None, None, None),
+        let (label, rung, confidence) = match (winner, &review) {
+            (Some(s), _) => (s.label.clone(), Some(s.rung), s.confidence),
+            (None, Some(_)) => (None, Some("review"), None),
+            (None, None) => (None, None, None),
         };
         let decision = format!("{}\t{}\t{}", self.task, label.as_deref().unwrap_or(""), rung.unwrap_or(""));
         Answer {
@@ -649,6 +954,7 @@ impl Ladder {
             rung,
             confidence,
             steps,
+            review,
         }
     }
 }

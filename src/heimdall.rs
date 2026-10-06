@@ -33,7 +33,17 @@ pub trait Embed: Send + Sync {
 pub trait Chat: Send + Sync {
     fn model(&self) -> &str;
     fn complete(&self, system: &str, user: &str) -> Result<String, String>;
+    /// The most likely FIRST tokens of the reply with their log-probabilities — one forward
+    /// pass, nothing decoded. The escalator's llm rung reads a label distribution from this.
+    fn top_logprobs(&self, system: &str, user: &str) -> Result<Vec<(String, f32)>, String> {
+        let _ = (system, user);
+        Err(format!("{}: this client cannot return next-token log-probabilities", self.model()))
+    }
 }
+
+/// How many alternatives [`HeimdallChat::top_logprobs`] asks for. mlx_lm.server rejects more
+/// than 11 (`ValueError: top_logprobs must be at most 11`, measured 6 Oct 2026).
+pub const TOP_LOGPROBS: usize = 10;
 
 fn base_url() -> String {
     std::env::var("HEIMDALL_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8080/v1".into())
@@ -117,12 +127,8 @@ impl HeimdallChat {
     }
 }
 
-impl Chat for HeimdallChat {
-    fn model(&self) -> &str {
-        &self.model
-    }
-
-    fn complete(&self, system: &str, user: &str) -> Result<String, String> {
+impl HeimdallChat {
+    fn guard(&self) -> Result<(), String> {
         let local = local_chat_model();
         if self.model != local {
             return Err(format!(
@@ -130,6 +136,41 @@ impl Chat for HeimdallChat {
                 self.model
             ));
         }
+        Ok(())
+    }
+}
+
+impl Chat for HeimdallChat {
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn top_logprobs(&self, system: &str, user: &str) -> Result<Vec<(String, f32)>, String> {
+        self.guard()?;
+        let d = post(
+            "chat/completions",
+            json!({
+                "model": self.model,
+                "temperature": 0,
+                "max_tokens": 1,
+                "logprobs": true,
+                "top_logprobs": TOP_LOGPROBS,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            }),
+        )?;
+        let top = d["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+            .as_array()
+            .ok_or_else(|| format!("chat: no top_logprobs in {d}"))?;
+        top.iter()
+            .map(|a| match (a["token"].as_str(), a["logprob"].as_f64()) {
+                (Some(t), Some(l)) => Ok((t.to_string(), l as f32)),
+                _ => Err(format!("chat: malformed top_logprobs entry {a}")),
+            })
+            .collect()
+    }
+
+    fn complete(&self, system: &str, user: &str) -> Result<String, String> {
+        self.guard()?;
         let d = post(
             "chat/completions",
             json!({
@@ -172,10 +213,26 @@ impl<C: Chat> Chat for CachedChat<C> {
             return Ok(r.clone());
         }
         let reply = self.inner.complete(system, user)?;
-        let mut cache = self.cache.lock().expect("chat cache lock");
-        cache.insert(key, reply.clone());
-        std::fs::write(&self.path, serde_json::to_vec(&*cache).expect("cache serializes")).map_err(|e| format!("{}: {e}", self.path.display()))?;
+        self.store(key, reply.clone())?;
         Ok(reply)
+    }
+
+    fn top_logprobs(&self, system: &str, user: &str) -> Result<Vec<(String, f32)>, String> {
+        let key = blake3::hash(format!("{}\0logprobs\0{system}\0{user}", self.inner.model()).as_bytes()).to_hex().to_string();
+        if let Some(r) = self.cache.lock().expect("chat cache lock").get(&key) {
+            return serde_json::from_str(r).map_err(|e| format!("chat cache: {e}"));
+        }
+        let top = self.inner.top_logprobs(system, user)?;
+        self.store(key, serde_json::to_string(&top).expect("pairs serialize"))?;
+        Ok(top)
+    }
+}
+
+impl<C: Chat> CachedChat<C> {
+    fn store(&self, key: String, value: String) -> Result<(), String> {
+        let mut cache = self.cache.lock().expect("chat cache lock");
+        cache.insert(key, value);
+        std::fs::write(&self.path, serde_json::to_vec(&*cache).expect("cache serializes")).map_err(|e| format!("{}: {e}", self.path.display()))
     }
 }
 
@@ -189,6 +246,8 @@ mod tests {
         // connection error, not the refusal.
         unsafe { std::env::set_var("HEIMDALL_API_URL", "http://127.0.0.1:1/v1") };
         let e = HeimdallChat::new("mlx-community/gemma-4-26b-a4b-it-4bit").complete("s", "u").unwrap_err();
+        assert!(e.starts_with("refused:"), "{e}");
+        let e = HeimdallChat::new("mlx-community/gemma-4-26b-a4b-it-4bit").top_logprobs("s", "u").unwrap_err();
         assert!(e.starts_with("refused:"), "{e}");
     }
 }
