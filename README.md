@@ -93,6 +93,26 @@ $B serve --ladder frontdesk.ladder.json --bind 127.0.0.1:7342
 curl -s -X POST http://127.0.0.1:7342/v1/classify -d '{"task":"frontdesk","text":"ขอใบเสร็จค่ารักษาใหม่ ฉบับเดิมหาย"}'
 ```
 
+## บันไดเลื่อน (escalator, v2)
+
+บันไดรุ่นที่ "เลื่อนเอง": แต่ละชั้นตอบก็ต่อเมื่อชุดคำตอบแบบ **conformal** เหลือ label เดียว ไม่อย่างนั้นส่งขึ้นชั้นถัดไป
+และชั้นบนสุดถ้ายังไม่แน่ใจ จะตอบ label ที่น่าจะเป็นที่สุด (โหมดฝึก) หรือส่งชุดคำตอบให้คนตัดสิน (`rung = "review"`, โหมดสอบ)
+
+```sh
+$B calibrate --ladder frontdesk.ladder.json --verified verified.jsonl --out frontdesk.escalator.json \
+             [--alpha 0.1] [--when-unsure answer|review] [--embed-cache FILE] [--chat-cache FILE]
+$B eval  --ladder frontdesk.escalator.json --cases holdout.jsonl
+$B serve --ladder frontdesk.escalator.json      # คำตอบมี "rate_guard" เมื่อสัดส่วนที่แต่ละชั้นตอบเบี่ยงจากตอน calibrate
+```
+
+- **calibrate บนแถวที่คนตรวจแล้วและไม่ได้ใช้ train** (ชุด train ทั้งชุดถูกปฏิเสธ) — คะแนน `1 − p̂(label จริง)` ของแต่ละชั้นให้จุดตัด `q̂`
+  ที่อันดับ ⌈(n+1)(1−α)⌉; ภายใต้ exchangeability ชุดคำตอบของแต่ละชั้นครอบคลุม label จริงด้วยความน่าจะเป็น ≥ 1 − α
+- **ชั้น LLM อ่านการแจกแจงจาก log-probabilities ของ token แรก** (ตัวเลือกเป็นตัวอักษร A, B, …) — forward pass เดียว ไม่ generate ข้อความ
+  (`Chat::top_logprobs`; mlx_lm.server รับ `top_logprobs` ได้ไม่เกิน 11)
+- **rate guard** (ไอเดียจาก Rethink): เทียบสัดส่วนที่แต่ละชั้นตอบใน N ครั้งล่าสุดกับตอน calibrate; ผลลัพธ์ที่ไม่เคยเห็นตอน calibrate นับเป็น 0%
+- ข้อจำกัด: ชุดคำตอบเลือกได้แค่ "ระหว่าง label" — ข้อความนอกเรื่องยังเป็นหน้าที่ของ novelty gate; จุดตัดจากแถวไม่กี่สิบแถวยังแกว่ง
+- ไฟล์ ladder รุ่นเดิม (ไม่มี `conformal`) ทำงานและ serialize เหมือนเดิมทุก byte — `tests/escalator.rs`
+
 ## สิ่งที่ implement
 
 | ไฟล์ | หน้าที่ |
