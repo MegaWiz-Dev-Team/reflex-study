@@ -222,7 +222,7 @@ fn calibrate(a: &Args) -> Result<(), String> {
     ladder.calibrate_conformal(&verified, alpha, when, clients.embed(), clients.chat())?;
     ladder.save(&out)?;
     let cf = ladder.conformal.as_ref().expect("just calibrated");
-    let q = |v: Option<f64>| v.map_or("never answers (too few rows for α)".into(), |q| format!("answers when one label has p ≥ {:.3}", 1.0 - q));
+    let q = |v: Option<f64>| v.map_or("never answers (too few rows for α)".into(), |q| format!("answers only when exactly one label has p̂ ≥ {:.3}", 1.0 - q));
     println!("escalator · α {alpha} · {} verified rows · when unsure: {when}", cf.n);
     println!("  lexical  {}", q(cf.lexical_qhat));
     if ladder.encoder.is_some() {
