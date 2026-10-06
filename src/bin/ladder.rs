@@ -15,6 +15,7 @@ const USAGE: &str = "usage:
                [--descriptions LABELS.json] [--target 0.9] [--folds 4]
                [--encoder BAAI/bge-m3 | --no-encoder] [--llm gemma-4-26b] [--embed-cache FILE]
                [--lexical bag|nbsvm|nbsvm-distill[:mix]|auto]   (auto = Ultra Instinct: gate-selected)
+               [--guide GUIDE.txt]   (a labelling guide / rulebook text for the llm rung's prompt)
   ladder calibrate --ladder LADDER.json --verified ROWS.jsonl --out LADDER2.json
                [--alpha 0.1] [--alpha-llm A] [--when-unsure answer|review] [--embed-cache FILE] [--chat-cache FILE]
                (--alpha: lexical+encoder rungs, where errors are silent; --alpha-llm: the llm rung,
@@ -51,6 +52,7 @@ struct Args {
     alpha: Option<f64>,
     alpha_llm: Option<f64>,
     when_unsure: Option<String>,
+    guide: Option<String>,
     bind: Option<String>,
 }
 
@@ -83,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
             "--alpha" => a.alpha = Some(val()?.parse().map_err(|e| format!("--alpha: {e}"))?),
             "--alpha-llm" => a.alpha_llm = Some(val()?.parse().map_err(|e| format!("--alpha-llm: {e}"))?),
             "--when-unsure" => a.when_unsure = Some(val()?),
+            "--guide" => a.guide = Some(val()?),
             "--bind" => a.bind = Some(val()?),
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown flag {other}\n\n{USAGE}")),
@@ -140,7 +143,10 @@ fn train(a: &Args) -> Result<(), String> {
     };
     let embed = a.encoder.as_deref().map(|m| HeimdallEmbed::new(m, a.embed_cache.clone()));
     let t = std::time::Instant::now();
-    let ladder = Ladder::fit(task, &rows, descriptions, &cfg, embed.as_ref().map(|e| e as &dyn Embed), a.llm.as_deref())?;
+    let mut ladder = Ladder::fit(task, &rows, descriptions, &cfg, embed.as_ref().map(|e| e as &dyn Embed), a.llm.as_deref())?;
+    if let Some(p) = &a.guide {
+        ladder.set_guide(Some(std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?));
+    }
     ladder.save(&out)?;
     println!("task {task} · {} rows · labels {:?} · fit in {:.1?}", rows.len(), ladder.labels, t.elapsed());
     let show = |name: &str, fit: &reflex_study::ladder::RungFit| {

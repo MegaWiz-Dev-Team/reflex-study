@@ -254,3 +254,20 @@ fn the_llm_rung_can_take_its_own_alpha_and_bad_alphas_are_refused() {
     assert!(loose.unwrap_or(1.0) <= strict.unwrap_or(1.0), "{loose:?} vs {strict:?}");
     assert_eq!(same.conformal.as_ref().unwrap().lexical_qhat, cf.lexical_qhat, "the lower rungs keep α = 0.05");
 }
+
+#[test]
+fn a_guide_reaches_both_llm_prompts_and_resets_calibration() {
+    let verified = rows(include_str!("fixtures/th_frontdesk_holdout.jsonl"));
+    let mut l = ladder();
+    assert!(!serde_json::to_string(&l).unwrap().contains("\"guide\""), "no guide = no field");
+    let chat = letters_for(&l, &verified, "");
+    l.calibrate_conformal(&verified, 0.1, None, "answer", Some(&FakeEmbed), Some(&chat)).unwrap();
+    let before = l.digest().to_string();
+    l.set_guide(Some("Rule B1: a bare announcement is not a warning.".into()));
+    assert!(l.llm_letter_prompt().contains("Rule B1") && l.llm_prompt().contains("Rule B1"));
+    assert!(l.conformal.is_none(), "the llm cutoff was fitted under the old prompt");
+    assert_ne!(l.digest(), before, "the guide is part of the ladder's identity");
+    l.set_guide(Some("   ".into()));
+    assert!(l.guide.is_none());
+}
+

@@ -203,6 +203,11 @@ pub struct Ladder {
     pub labels: Vec<String>,
     /// Optional one-line meaning per label (the llm rung's prompt).
     pub descriptions: BTreeMap<String, String>,
+    /// Optional labelling guide placed before the options in the llm rung's prompt — e.g. a
+    /// rulebook's precedence and boundary rules, so the llm reads the same definitions the
+    /// labellers used. Part of the file, so the digest (and every receipt) covers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guide: Option<String>,
     pub tokenizer: String,
     pub target_accuracy: f64,
     pub trained_on: usize,
@@ -517,6 +522,7 @@ impl Ladder {
             task: task.into(),
             labels,
             descriptions,
+            guide: None,
             tokenizer: cfg.tokenizer.as_str().into(),
             target_accuracy: cfg.target_accuracy,
             trained_on: if shared { lexical_examples.len() } else { lexical_examples.len() + encoder_examples.len() },
@@ -638,11 +644,24 @@ impl Ladder {
         std::fs::write(path, self.to_bytes()).map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// Attach (or remove) the llm rung's labelling guide. The escalator's llm cutoff was fitted
+    /// under the old prompt, so a calibrated ladder loses its calibration: calibrate again.
+    pub fn set_guide(&mut self, guide: Option<String>) {
+        self.guide = guide.filter(|g| !g.trim().is_empty());
+        self.conformal = None;
+        self.digest = hex(&self.to_bytes());
+    }
+
+    fn guide_block(&self) -> String {
+        self.guide.as_deref().map(|g| format!("{}\n", g.trim_end())).unwrap_or_default()
+    }
+
     /// The llm rung's system prompt (labels + their one-line meanings).
     pub fn llm_prompt(&self) -> String {
         let mut s = format!(
-            "Classify the user's message for the task \"{}\". Answer with exactly one label from this list, or UNSURE if none clearly fits.\n",
-            self.task
+            "Classify the user's message for the task \"{}\". Answer with exactly one label from this list, or UNSURE if none clearly fits.\n{}",
+            self.task,
+            self.guide_block()
         );
         for l in &self.labels {
             match self.descriptions.get(l) {
@@ -664,7 +683,7 @@ impl Ladder {
     /// The escalator's llm prompt: the labels as lettered options (A, B, …), answered with one
     /// letter so the first token's log-probabilities are the label distribution.
     pub fn llm_letter_prompt(&self) -> String {
-        let mut s = format!("Classify the user's message for the task \"{}\". The options:\n", self.task);
+        let mut s = format!("Classify the user's message for the task \"{}\".\n{}The options:\n", self.task, self.guide_block());
         for (i, l) in self.labels.iter().enumerate() {
             let letter = (b'A' + i as u8) as char;
             match self.descriptions.get(l) {
