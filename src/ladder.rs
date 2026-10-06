@@ -269,7 +269,12 @@ pub struct Answer {
 /// The escalator's calibration (see the module doc).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Conformal {
+    /// α of the lexical and encoder rungs — where a wrong answer is a SILENT one.
     pub alpha: f64,
+    /// α of the llm rung — where an unsure set goes to a person (`None` = same as `alpha`).
+    /// A looser llm α sends fewer cases for review; a strict lower α keeps silent errors rare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha_llm: Option<f64>,
     /// Verified rows the cutoffs were fitted on, and BLAKE3 of them (text \t label \n).
     pub n: usize,
     pub calibration_digest: String,
@@ -710,12 +715,15 @@ impl Ladder {
         &mut self,
         verified: &[Example],
         alpha: f64,
+        alpha_llm: Option<f64>,
         when_unsure: &str,
         embed: Option<&dyn Embed>,
         chat: Option<&dyn Chat>,
     ) -> Result<(), String> {
-        if !(alpha > 0.0 && alpha < 1.0) {
-            return Err(format!("alpha {alpha}: must be in (0, 1)"));
+        for a in std::iter::once(alpha).chain(alpha_llm) {
+            if !(a > 0.0 && a < 1.0) {
+                return Err(format!("alpha {a}: must be in (0, 1)"));
+            }
         }
         if !matches!(when_unsure, "answer" | "review") {
             return Err(format!("when_unsure {when_unsure:?}: answer | review"));
@@ -760,7 +768,7 @@ impl Ladder {
                 }
                 let prompt = self.llm_letter_prompt();
                 let p: Vec<Vec<f32>> = verified.iter().map(|e| ch.top_logprobs(&prompt, &e.text).and_then(|t| self.llm_distribution(&t))).collect::<Result<_, _>>()?;
-                let q = conformal_qhat(&score(&p), alpha);
+                let q = conformal_qhat(&score(&p), alpha_llm.unwrap_or(alpha));
                 (Some(p), q)
             }
         };
@@ -781,6 +789,7 @@ impl Ladder {
         let n = verified.len();
         self.conformal = Some(Conformal {
             alpha,
+            alpha_llm,
             n,
             calibration_digest: digest,
             lexical_qhat,

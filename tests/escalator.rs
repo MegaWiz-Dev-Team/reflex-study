@@ -154,7 +154,7 @@ fn calibration_refuses_the_training_rows() {
     let mut l = ladder();
     let train = train_rows();
     let chat = letters_for(&l, &train, "");
-    let e = l.calibrate_conformal(&train, 0.1, "answer", Some(&FakeEmbed), Some(&chat)).unwrap_err();
+    let e = l.calibrate_conformal(&train, 0.1, None, "answer", Some(&FakeEmbed), Some(&chat)).unwrap_err();
     assert!(e.contains("training rows"), "{e}");
 }
 
@@ -163,7 +163,7 @@ fn the_escalator_answers_singletons_and_sends_an_unsure_llm_set_for_review() {
     let verified = rows(include_str!("fixtures/th_frontdesk_holdout.jsonl"));
     let mut l = ladder();
     let chat = letters_for(&l, &verified, "");
-    l.calibrate_conformal(&verified, 0.1, "review", Some(&FakeEmbed), Some(&chat)).unwrap();
+    l.calibrate_conformal(&verified, 0.1, None, "review", Some(&FakeEmbed), Some(&chat)).unwrap();
     let cf = l.conformal.clone().unwrap();
     assert_eq!(cf.n, verified.len());
     assert!(cf.llm_qhat.is_some() && cf.lexical_qhat.is_some());
@@ -189,7 +189,7 @@ fn the_escalator_answers_singletons_and_sends_an_unsure_llm_set_for_review() {
 
     // The same split under when_unsure = answer takes the top label instead.
     let mut practice = ladder();
-    practice.calibrate_conformal(&verified, 0.1, "answer", Some(&FakeEmbed), Some(&chat)).unwrap();
+    practice.calibrate_conformal(&verified, 0.1, None, "answer", Some(&FakeEmbed), Some(&chat)).unwrap();
     let a = practice.decide(&reaches_llm, Some(&FakeEmbed), Some(&chat));
     assert_eq!((a.rung, a.label.as_deref()), (Some("llm"), Some("billing")));
     assert!(a.review.is_none());
@@ -219,7 +219,7 @@ fn the_rate_guard_flags_a_drifting_share_and_stays_quiet_inside_the_band() {
     let verified = rows(include_str!("fixtures/th_frontdesk_holdout.jsonl"));
     let mut l = ladder();
     let chat = letters_for(&l, &verified, "");
-    l.calibrate_conformal(&verified, 0.1, "answer", Some(&FakeEmbed), Some(&chat)).unwrap();
+    l.calibrate_conformal(&verified, 0.1, None, "answer", Some(&FakeEmbed), Some(&chat)).unwrap();
     let cf = l.conformal.as_ref().unwrap();
     let top = cf.shares.iter().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0.clone();
     // Inside the band: replay the calibration mix exactly → no warning.
@@ -235,4 +235,22 @@ fn the_rate_guard_flags_a_drifting_share_and_stays_quiet_inside_the_band() {
     let mut g = RateGuard::new(cf, 100);
     let w = (0..100).filter_map(|_| g.observe("review")).last().expect("drift is flagged");
     assert!(w.contains("review"), "{w}");
+}
+
+#[test]
+fn the_llm_rung_can_take_its_own_alpha_and_bad_alphas_are_refused() {
+    let verified = rows(include_str!("fixtures/th_frontdesk_holdout.jsonl"));
+    let mut l = ladder();
+    let chat = letters_for(&l, &verified, "");
+    assert!(l.calibrate_conformal(&verified, 0.1, Some(1.5), "answer", Some(&FakeEmbed), Some(&chat)).is_err());
+    assert!(l.calibrate_conformal(&verified, 0.0, None, "answer", Some(&FakeEmbed), Some(&chat)).is_err());
+    l.calibrate_conformal(&verified, 0.05, Some(0.3), "review", Some(&FakeEmbed), Some(&chat)).unwrap();
+    let cf = l.conformal.as_ref().unwrap();
+    assert_eq!((cf.alpha, cf.alpha_llm), (0.05, Some(0.3)));
+    // the same rows at one α: the llm cutoff can only be as loose or looser at the bigger α
+    let mut same = ladder();
+    same.calibrate_conformal(&verified, 0.05, None, "review", Some(&FakeEmbed), Some(&chat)).unwrap();
+    let (strict, loose) = (same.conformal.as_ref().unwrap().llm_qhat, cf.llm_qhat);
+    assert!(loose.unwrap_or(1.0) <= strict.unwrap_or(1.0), "{loose:?} vs {strict:?}");
+    assert_eq!(same.conformal.as_ref().unwrap().lexical_qhat, cf.lexical_qhat, "the lower rungs keep α = 0.05");
 }

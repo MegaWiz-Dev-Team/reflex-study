@@ -16,7 +16,9 @@ const USAGE: &str = "usage:
                [--encoder BAAI/bge-m3 | --no-encoder] [--llm gemma-4-26b] [--embed-cache FILE]
                [--lexical bag|nbsvm|nbsvm-distill[:mix]|auto]   (auto = Ultra Instinct: gate-selected)
   ladder calibrate --ladder LADDER.json --verified ROWS.jsonl --out LADDER2.json
-               [--alpha 0.1] [--when-unsure answer|review] [--embed-cache FILE] [--chat-cache FILE]
+               [--alpha 0.1] [--alpha-llm A] [--when-unsure answer|review] [--embed-cache FILE] [--chat-cache FILE]
+               (--alpha: lexical+encoder rungs, where errors are silent; --alpha-llm: the llm rung,
+               where an unsure set is answered or reviewed — defaults to --alpha)
                (the escalator: conformal acceptance fitted on verified rows NOT used for training)
   ladder eval  --ladder LADDER.json --cases CASES.jsonl [--embed-cache FILE] [--chat-cache FILE] [--no-llm]
   ladder serve --ladder LADDER.json [--ladder ...] [--bind 127.0.0.1:7342] [--embed-cache FILE]
@@ -47,6 +49,7 @@ struct Args {
     chat_cache: Option<PathBuf>,
     verified: Option<String>,
     alpha: Option<f64>,
+    alpha_llm: Option<f64>,
     when_unsure: Option<String>,
     bind: Option<String>,
 }
@@ -78,6 +81,7 @@ fn parse_args() -> Result<Args, String> {
             "--chat-cache" => a.chat_cache = Some(PathBuf::from(val()?)),
             "--verified" => a.verified = Some(val()?),
             "--alpha" => a.alpha = Some(val()?.parse().map_err(|e| format!("--alpha: {e}"))?),
+            "--alpha-llm" => a.alpha_llm = Some(val()?.parse().map_err(|e| format!("--alpha-llm: {e}"))?),
             "--when-unsure" => a.when_unsure = Some(val()?),
             "--bind" => a.bind = Some(val()?),
             "-h" | "--help" => return Err(USAGE.into()),
@@ -219,11 +223,11 @@ fn calibrate(a: &Args) -> Result<(), String> {
     let clients = Clients::with_chat_cache(std::slice::from_ref(&ladder), a.embed_cache.clone(), false, a.chat_cache.clone());
     let alpha = a.alpha.unwrap_or(0.1);
     let when = a.when_unsure.as_deref().unwrap_or("answer");
-    ladder.calibrate_conformal(&verified, alpha, when, clients.embed(), clients.chat())?;
+    ladder.calibrate_conformal(&verified, alpha, a.alpha_llm, when, clients.embed(), clients.chat())?;
     ladder.save(&out)?;
     let cf = ladder.conformal.as_ref().expect("just calibrated");
     let q = |v: Option<f64>| v.map_or("never answers (too few rows for α)".into(), |q| format!("answers only when exactly one label has p̂ ≥ {:.3}", 1.0 - q));
-    println!("escalator · α {alpha} · {} verified rows · when unsure: {when}", cf.n);
+    println!("escalator · α {alpha} (llm α {}) · {} verified rows · when unsure: {when}", cf.alpha_llm.unwrap_or(alpha), cf.n);
     println!("  lexical  {}", q(cf.lexical_qhat));
     if ladder.encoder.is_some() {
         println!("  encoder  {}", q(cf.encoder_qhat));
@@ -301,7 +305,7 @@ fn eval(a: &Args) -> Result<(), String> {
         println!("sent for a person's review: {reviews}");
     }
     if let Some(cf) = &ladder.conformal {
-        println!("escalator: α {} · calibrated on {} rows · when unsure: {}", cf.alpha, cf.n, cf.when_unsure);
+        println!("escalator: α {} (llm α {}) · calibrated on {} rows · when unsure: {}", cf.alpha, cf.alpha_llm.unwrap_or(cf.alpha), cf.n, cf.when_unsure);
     }
     if off > 0 {
         println!("off-task n={off}: abstained {off_abstained}");
